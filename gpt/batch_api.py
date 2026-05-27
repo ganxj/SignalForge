@@ -3,6 +3,7 @@ import uuid
 import time
 import os
 import openai
+from openai import OpenAI
 import requests
 from config.config_loader import get_config
 from scheduler.cost_tracker import add_cost
@@ -10,6 +11,11 @@ from utils.logger import setup_logger
 
 log = setup_logger()
 config = get_config()
+
+client = OpenAI(
+    api_key=config["ai"]["openai"].get("api_key"),
+    base_url=config["ai"]["openai"].get("base_url") or None,
+)
 
 RESPONSE_DIR = "data/batch_responses"
 
@@ -20,12 +26,12 @@ def clean_storage():
     If not cleaned, this can block new batch submissions due to storage limits.
     """
     try:
-        files = openai.files.list()
+        files = client.files.list()
         deleted = 0
         for f in files.data:
             if f.purpose in ("batch", "batch_output"):
                 try:
-                    openai.files.delete(f.id)
+                    client.files.delete(f.id)
                     deleted += 1
                 except Exception as e:
                     log.warning(f"Failed to delete file {f.id}: {e}")
@@ -72,14 +78,14 @@ def submit_batch_job(file_path: str, endpoint: str = "/v1/chat/completions",
     """
     file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
     log.info(f"Uploading batch file ({file_size_mb:.1f} MB)...")
-    uploaded_file = openai.files.create(file=open(file_path, "rb"), purpose="batch")
+    uploaded_file = client.files.create(file=open(file_path, "rb"), purpose="batch")
     log.info(f"Uploaded file for batch: {uploaded_file.id}")
 
     metadata = {}
     if estimated_tokens:
         metadata["estimated_tokens"] = str(estimated_tokens)
 
-    batch = openai.batches.create(
+    batch = client.batches.create(
         input_file_id=uploaded_file.id,
         endpoint=endpoint,
         completion_window="24h",
@@ -100,7 +106,7 @@ def get_active_enqueued_tokens() -> int:
     avg_tokens_per_request = 350  # fallback estimate
 
     try:
-        batches = openai.batches.list(limit=100)
+        batches = client.batches.list(limit=100)
         for batch in batches.data:
             if batch.status not in active_statuses:
                 continue
@@ -172,8 +178,8 @@ def probe_enqueued_capacity(model: str, max_wait=7200, poll_interval=300) -> boo
         log.info(f"[Probe attempt {attempt}] Testing enqueued capacity for {model}... "
                  f"(elapsed: {elapsed}s / {max_wait}s)")
         try:
-            uploaded = openai.files.create(file=open(probe_path, "rb"), purpose="batch")
-            batch = openai.batches.create(
+            uploaded = client.files.create(file=open(probe_path, "rb"), purpose="batch")
+            batch = client.batches.create(
                 input_file_id=uploaded.id,
                 endpoint="/v1/chat/completions",
                 completion_window="24h",
@@ -183,7 +189,7 @@ def probe_enqueued_capacity(model: str, max_wait=7200, poll_interval=300) -> boo
             # Quick-poll for confirmation
             for _ in range(30):  # up to 5 minutes
                 time.sleep(10)
-                b = openai.batches.retrieve(batch.id)
+                b = client.batches.retrieve(batch.id)
                 if b.status == "failed":
                     # Check if it's a token limit error
                     errors = getattr(b, "errors", None)
@@ -205,7 +211,7 @@ def probe_enqueued_capacity(model: str, max_wait=7200, poll_interval=300) -> boo
                     # Cancel the probe — we don't need its results
                     if b.status not in ("completed", "failed", "cancelled", "expired"):
                         try:
-                            openai.batches.cancel(batch.id)
+                            client.batches.cancel(batch.id)
                         except Exception:
                             pass
                     # Clean up probe file
@@ -218,7 +224,7 @@ def probe_enqueued_capacity(model: str, max_wait=7200, poll_interval=300) -> boo
                 # Still validating after 5 min — treat as tentatively OK
                 log.info(f"[Probe] Batch still validating after 5 min. Assuming capacity is available.")
                 try:
-                    openai.batches.cancel(batch.id)
+                    client.batches.cancel(batch.id)
                 except Exception:
                     pass
                 try:
@@ -247,7 +253,7 @@ def poll_batch_status(batch_id: str, timeout_seconds: int = 10800) -> dict:
     last_progress_time = time.time()
 
     while True:
-        batch = openai.batches.retrieve(batch_id)
+        batch = client.batches.retrieve(batch_id)
         status = batch.status
         request_counts = batch.request_counts
         completed = getattr(request_counts, "completed", 0)
@@ -267,13 +273,13 @@ def poll_batch_status(batch_id: str, timeout_seconds: int = 10800) -> dict:
         if time.time() - last_progress_time > timeout_seconds:
             log.warning(f"No progress in last {timeout_seconds // 60} mins. Cancelling batch {batch_id}...")
             try:
-                openai.batches.cancel(batch_id)
+                client.batches.cancel(batch_id)
             except Exception as e:
                 log.error(f"Error cancelling batch {batch_id}: {e}")
 
             # Wait for cancellation confirmation
             while True:
-                batch = openai.batches.retrieve(batch_id)
+                batch = client.batches.retrieve(batch_id)
                 log.info(f"Waiting for cancellation... Current status: {batch.status}")
                 if batch.status in {"cancelled", "failed", "expired"}:
                     return {"status": "cancelled", "batch": batch}
@@ -283,7 +289,7 @@ def poll_batch_status(batch_id: str, timeout_seconds: int = 10800) -> dict:
 
 def download_batch_results(batch_id: str, save_path: str):
     """Downloads and stores the results of a completed batch job."""
-    batch = openai.batches.retrieve(batch_id)
+    batch = client.batches.retrieve(batch_id)
     if batch.status != "completed":
         raise RuntimeError(f"Batch {batch_id} not completed.")
 
@@ -291,8 +297,8 @@ def download_batch_results(batch_id: str, save_path: str):
     if not output_file_id:
         raise RuntimeError(f"No output file found for batch {batch_id}.")
 
-    output_file = openai.files.retrieve(output_file_id)
-    response = openai.files.content(output_file_id)
+    output_file = client.files.retrieve(output_file_id)
+    response = client.files.content(output_file_id)
 
     with open(save_path, "wb") as f:
         f.write(response.read())
@@ -305,14 +311,14 @@ def download_batch_results_if_available(batch_id: str, save_path: str) -> bool:
     This handles expired batches that may have partial results which
     download_batch_results() cannot retrieve (it requires status == 'completed').
     """
-    batch = openai.batches.retrieve(batch_id)
+    batch = client.batches.retrieve(batch_id)
     output_file_id = batch.output_file_id
 
     if not output_file_id:
         log.warning(f"No output file available for batch {batch_id} (status: {batch.status})")
         return False
 
-    response = openai.files.content(output_file_id)
+    response = client.files.content(output_file_id)
     with open(save_path, "wb") as f:
         f.write(response.read())
 

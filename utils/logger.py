@@ -26,7 +26,7 @@ def setup_logger():
 
     # Create file handler
     today = datetime.now().strftime("%Y-%m-%d")
-    file_handler = logging.FileHandler(f"logs/cronlytic_{today}.log")
+    file_handler = logging.FileHandler(f"logs/cronlytic_{today}.log", encoding="utf-8")
     file_handler.setLevel(log_level)
 
     # Create formatter

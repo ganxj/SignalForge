@@ -3,21 +3,9 @@
 # Target communities
 subreddits:
   primary:
-    - devops
     - selfhosted
-    - webdev
-    - startups
-    - personalfinance
-    - Parenting
-    - smallbusiness
-    - Fitness
+    - devops
     - saas
-    - entrepreneurship
-    - sports
-    - technology
-    - security
-    - pregnant
-    - Beauty
   exploratory_limit: 12             # Max exploratory subreddits at a time
   exploratory_refresh_days: 7       # How often to refresh improvised list
   exploratory_percentage: 90        # % of posts from exploratory communities
@@ -25,20 +13,39 @@ subreddits:
 
 # Reddit scraping settings
 scraper:
-  min_post_age_days: 5              # Post must be at least 5 days old
-  max_post_age_days: 7              # Ignore posts older than 3 months
-  max_items_per_day: 10           # Total posts/comments scraped per run
+  min_post_age_days: 0              # Include fresh posts/comments
+  max_post_age_days: 14             # Keep first formal crawl small and recent
+  max_items_per_day: 9              # Small polite run for MVP validation
   include_comments: true
-  rate_limit_per_minute: 60         # Reddit API rate limit
+  rate_limit_per_minute: 12         # Conservative public JSON crawling
+
+# Public JSON scraper safety controls
+public_scraper:
+  max_requests_per_run: 45
+  max_rate_limit_hits: 2
+  polite_delay_seconds: 3
+  backoff_base_seconds: 90
+  backoff_max_seconds: 900
+  cache_ttl_hours: 12
+  cache_dir: data/cache/reddit_json
+  max_comments_per_post: 8
+  max_items_to_analyze: 12
+  comment_sort: confidence
+  min_posts_per_subreddit: 3
+  sorts:
+    - hot
+    - top
+    - new
+  top_time_filter: week
 
 # AI provider settings
 ai:
   provider: openai               # "openai" or "anthropic"
   openai:
-    model_filter: gpt-5-mini        # For pre-filtering stage
-    model_deep: gpt-5.1             # For insight extraction
+    model_filter: deepseek-3.2        # For pre-filtering stage
+    model_deep: deepseek-3.2             # For insight extraction
     enqueued_token_limits:           # Max enqueued tokens per model (OpenAI tier limits)
-      gpt-5.1: 900_000
+      deepseek-3.2: 900_000
     default_enqueued_token_limit: 5_000_000
   anthropic:
     model_filter: claude-haiku-4-5-20251001
