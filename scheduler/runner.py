@@ -6,7 +6,6 @@ import os
 import glob
 from datetime import datetime
 import time
-from reddit.scraper import scrape_subreddits
 from db.writer import insert_post, update_post_filter_scores, update_post_insight, mark_insight_processed, mark_posts_in_history
 from db.reader import get_top_insights_from_today, get_posts_by_ids, get_post_parent_mapping
 from db.schema import create_tables
@@ -28,6 +27,19 @@ from utils.helpers import ensure_directory_exists, sanitize_text
 
 log = setup_logger()
 config = get_config()
+
+
+def scrape_configured_subreddits() -> list[dict]:
+    mode = config.get("reddit", {}).get("mode", "public_json")
+    if mode == "api":
+        from reddit.scraper import scrape_subreddits
+
+        return scrape_subreddits()
+    if mode == "public_json":
+        from reddit.scraper_public import scrape_subreddits_public
+
+        return scrape_subreddits_public()
+    raise ValueError("Invalid reddit.mode. Use 'public_json' or 'api'.")
 
 def submit_with_backoff(batch_items, model, generate_file_fn, label="filter") -> str | None:
     delay = 10
@@ -472,7 +484,7 @@ def run_daily_pipeline():
     clean_old_entries()
 
     log.info("Step 2: Scraping Reddit posts...")
-    scraped_posts = scrape_subreddits()
+    scraped_posts = scrape_configured_subreddits()
     if not scraped_posts:
         log.warning("No posts found to analyze. Exiting pipeline.")
         return

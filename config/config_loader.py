@@ -21,7 +21,9 @@ def get_config():
         raw_config = yaml.safe_load(f)
 
     # Inject secrets from .env
+    reddit_config = raw_config.get("reddit", {})
     raw_config["reddit"] = {
+        **reddit_config,
         "client_id": os.getenv("REDDIT_CLIENT_ID"),
         "client_secret": os.getenv("REDDIT_CLIENT_SECRET"),
         "user_agent": os.getenv("REDDIT_USER_AGENT"),

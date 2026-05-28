@@ -3,35 +3,96 @@
 # Target communities
 subreddits:
   primary:
+    # Broad mainstream communities
+    - AskReddit
+    - NoStupidQuestions
+    - todayilearned
+    - explainlikeimfive
+    - LifeProTips
+    - IAmA
+    - worldnews
+    - news
+    - science
+    - technology
+    - Futurology
+    - dataisbeautiful
+    - books
+    - movies
+    - television
+    - Music
+    - gaming
+    - pcgaming
+    - Games
+    - aww
+    - pics
+    - funny
+    - mildlyinteresting
+    - interestingasfuck
+    - Damnthatsinteresting
+    - travel
+    - food
+    - fitness
+    - personalfinance
+    - investing
+    - stocks
+    - CryptoCurrency
+    - entrepreneur
+    - startups
+    - smallbusiness
+    - marketing
+    - productivity
+    - GetMotivated
+    - careeradvice
+    - jobs
+    - cscareerquestions
+    # Tech, developer, SaaS, and infrastructure communities
     - selfhosted
     - devops
     - saas
+    - programming
+    - learnprogramming
+    - webdev
+    - softwareengineering
+    - sysadmin
+    - cybersecurity
+    - homelab
+    - DataHoarder
+    - artificial
+    - MachineLearning
   exploratory_limit: 12             # Max exploratory subreddits at a time
   exploratory_refresh_days: 7       # How often to refresh improvised list
   exploratory_percentage: 90        # % of posts from exploratory communities
   primary_percentage: 10            # % of posts from configured communities
 
 # Reddit scraping settings
+reddit:
+  mode: public_json                 # "public_json" or "api"
+  scheduled_crawl_enabled: true     # Run automatic crawls while the Streamlit app is open
+  scheduled_crawl_interval_minutes: 360
+
+ui:
+  default_language: zh              # "zh" or "en"
+
 scraper:
   min_post_age_days: 0              # Include fresh posts/comments
   max_post_age_days: 14             # Keep first formal crawl small and recent
-  max_items_per_day: 9              # Small polite run for MVP validation
+  max_items_per_day: 60             # Total target item budget per run
   include_comments: true
   rate_limit_per_minute: 12         # Conservative public JSON crawling
 
 # Public JSON scraper safety controls
 public_scraper:
-  max_requests_per_run: 45
+  max_requests_per_run: 180
   max_rate_limit_hits: 2
   polite_delay_seconds: 3
   backoff_base_seconds: 90
   backoff_max_seconds: 900
-  cache_ttl_hours: 12
+  cache_ttl_hours: 1
   cache_dir: data/cache/reddit_json
   max_comments_per_post: 8
   max_items_to_analyze: 12
   comment_sort: confidence
-  min_posts_per_subreddit: 3
+  min_posts_per_subreddit: 2
   sorts:
     - hot
     - top
