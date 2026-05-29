@@ -49,6 +49,7 @@ REQUEST_COUNT = 0
 RATE_LIMIT_HITS = 0
 
 SESSION = requests.Session()
+SESSION.trust_env = False
 SESSION.headers.update({
     "User-Agent": config.get("reddit", {}).get("user_agent")
     or "script:reddit-demand-intel:v0.1 (by /u/local-user)",
@@ -283,7 +284,11 @@ def fetch_posts_from_subreddit_public(subreddit: str, limit: int = 10) -> list[d
     return results
 
 
-def scrape_subreddits_public() -> list[dict]:
+def scrape_subreddits_public(stop_callback=None, progress_callback=None) -> list[dict]:
+    global REQUEST_COUNT, RATE_LIMIT_HITS
+    REQUEST_COUNT = 0
+    RATE_LIMIT_HITS = 0
+
     primary_subreddits = config["subreddits"]["primary"]
     total_limit = config["scraper"].get("max_items_per_day", 10)
     per_subreddit = max(1, total_limit // max(1, len(primary_subreddits)))
@@ -291,15 +296,25 @@ def scrape_subreddits_public() -> list[dict]:
 
     all_items = []
     log.info(f"Scraping {len(primary_subreddits)} subreddits via public JSON...")
-    try:
-        for sub in primary_subreddits:
+    total_subreddits = len(primary_subreddits)
+    for index, sub in enumerate(primary_subreddits, start=1):
+        if stop_callback and stop_callback():
+            log.info("Public JSON crawl stop requested.")
+            break
+        if progress_callback:
+            progress_callback("crawl", index, total_subreddits)
+        try:
             items = fetch_posts_from_subreddit_public(sub, limit=per_subreddit)
             for item in items:
                 insert_post(item, community_type="primary")
             all_items.extend(items)
             time.sleep(POLITE_DELAY_SECONDS)
-    except PublicScraperStopped as e:
-        log.warning(f"Stopping public scraper early: {e}")
+        except PublicScraperStopped as e:
+            log.warning(f"Skipping r/{sub} after public scraper stop: {e}")
+            RATE_LIMIT_HITS = 0
+            if REQUEST_COUNT >= MAX_REQUESTS_PER_RUN:
+                break
+            time.sleep(POLITE_DELAY_SECONDS)
 
     log.info(f"Total public JSON items scraped: {len(all_items)}; requests={REQUEST_COUNT}; rate_limit_hits={RATE_LIMIT_HITS}")
     return all_items

@@ -4,6 +4,7 @@ import inspect
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 import threading
 from datetime import datetime, UTC
@@ -20,7 +21,15 @@ if str(PROJECT_ROOT) not in sys.path:
 from config.config_loader import get_config
 from db.cleaner import clean_old_entries
 from db.schema import create_tables
-from utils.helpers import ensure_directory_exists
+from scheduler.task_state import (
+    DEFAULT_TASK_STATE,
+    TASK_STATUS_PATH,
+    load_task_state_from_disk,
+    save_task_state_to_disk,
+    set_task_state,
+    utc_now_label,
+)
+from utils.helpers import ensure_directory_exists, sanitize_text
 
 
 st.set_page_config(
@@ -32,32 +41,6 @@ st.set_page_config(
 CRAWL_LOCK = threading.Lock()
 ANALYZE_LOCK = threading.Lock()
 TASK_STATE_LOCK = threading.Lock()
-DEFAULT_TASK_STATE = {
-    "crawl": {
-        "running": False,
-        "last_started_at": None,
-        "last_finished_at": None,
-        "last_message": "",
-        "last_error": "",
-        "stage": "",
-        "current": 0,
-        "total": 0,
-        "heartbeat_at": None,
-    },
-    "analysis": {
-        "running": False,
-        "last_started_at": None,
-        "last_finished_at": None,
-        "last_message": "",
-        "last_error": "",
-        "stage": "",
-        "current": 0,
-        "total": 0,
-        "heartbeat_at": None,
-    },
-}
-TASK_STATUS_PATH = Path("data/task_status.json")
-
 TRANSLATIONS = {
     "en": {
         "language": "Language",
@@ -69,7 +52,7 @@ TRANSLATIONS = {
         "scraped_posts": "Scraped Posts",
         "ai_insights": "AI Insights",
         "crawl_reddit": "Crawl Reddit",
-        "scheduled_enabled": "Scheduled crawl is enabled every {minutes} minutes while this app is running.",
+        "scheduled_enabled": "Scheduled crawl is enabled at minute 0 of every hour while this app is running.",
         "scheduled_disabled": "Scheduled crawl is disabled. Enable it in config/config.yaml -> reddit.scheduled_crawl_enabled.",
         "crawling": "Crawling Reddit via {mode}...",
         "crawl_completed": "Crawl completed via {mode}. Scraped {count} items.",
@@ -87,6 +70,9 @@ TRANSLATIONS = {
         "no_progress_data": "No progress data yet. This may be an older task started before progress tracking was added.",
         "reset_stale_task": "Reset stale task status",
         "stale_task_reset": "Stale task status has been reset.",
+        "stop_task": "Stop current task",
+        "stop_requested": "Stop requested. The task will stop after the current request/item finishes.",
+        "task_pending": "One follow-up run is queued.",
         "task_running_blocked": "This task is already running. Wait for it to finish before starting it again.",
         "no_scraped": "No scraped posts found. Click Crawl Reddit to fetch data.",
         "loaded_scraped": "Loaded {count} recently scraped posts/comments.",
@@ -178,7 +164,7 @@ TRANSLATIONS = {
         "scraped_posts": "已抓取内容",
         "ai_insights": "AI 洞察",
         "crawl_reddit": "抓取 Reddit",
-        "scheduled_enabled": "页面运行期间，每 {minutes} 分钟自动抓取一次。",
+        "scheduled_enabled": "页面运行期间，每小时 0 分自动抓取一次。",
         "scheduled_disabled": "定时抓取已关闭，可在 config/config.yaml -> reddit.scheduled_crawl_enabled 开启。",
         "crawling": "正在通过 {mode} 抓取 Reddit...",
         "crawl_completed": "抓取完成，模式：{mode}，本次返回 {count} 条。",
@@ -196,6 +182,9 @@ TRANSLATIONS = {
         "no_progress_data": "暂无进度数据。这个任务可能是在进度跟踪功能加入之前启动的旧任务。",
         "reset_stale_task": "重置卡住的任务状态",
         "stale_task_reset": "已重置卡住的任务状态。",
+        "stop_task": "停止当前任务",
+        "stop_requested": "已请求停止，当前请求/条目处理完成后会停止。",
+        "task_pending": "已排队 1 次后续运行。",
         "task_running_blocked": "该任务正在执行，请等待完成后再重新启动。",
         "no_scraped": "暂无抓取内容。点击“抓取 Reddit”获取数据。",
         "loaded_scraped": "已加载最近抓取的 {count} 条帖子/评论。",
@@ -318,45 +307,46 @@ def display_processing_status(lang: str, status: str) -> str:
     }.get(status, status)
 
 
-def utc_now_label() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-
-def load_task_state_from_disk() -> dict:
-    if not TASK_STATUS_PATH.exists():
-        return json.loads(json.dumps(DEFAULT_TASK_STATE))
-
+def is_pid_running(pid) -> bool:
+    if not pid:
+        return False
     try:
-        with TASK_STATUS_PATH.open("r", encoding="utf-8") as f:
-            state = json.load(f)
+        os.kill(int(pid), 0)
+        return True
+    except OSError:
+        return False
     except Exception:
-        return json.loads(json.dumps(DEFAULT_TASK_STATE))
-
-    merged = json.loads(json.dumps(DEFAULT_TASK_STATE))
-    for task, task_state in state.items():
-        if task in merged and isinstance(task_state, dict):
-            merged[task].update(task_state)
-    return merged
+        return False
 
 
-def save_task_state_to_disk(state: dict):
-    TASK_STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = TASK_STATUS_PATH.with_suffix(".json.tmp")
-    with tmp_path.open("w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
-    os.replace(tmp_path, TASK_STATUS_PATH)
-
-
-def set_task_state(task: str, **updates):
-    with TASK_STATE_LOCK:
-        state = load_task_state_from_disk()
-        state[task].update(updates)
-        save_task_state_to_disk(state)
+def is_heartbeat_stale(heartbeat: str | None, max_age_seconds: int = 300) -> bool:
+    if not heartbeat:
+        return True
+    try:
+        heartbeat_at = datetime.strptime(heartbeat, "%Y-%m-%d %H:%M:%S UTC").replace(tzinfo=UTC)
+    except Exception:
+        return True
+    return (datetime.now(UTC) - heartbeat_at).total_seconds() > max_age_seconds
 
 
 def get_task_state(task: str) -> dict:
     with TASK_STATE_LOCK:
-        return dict(load_task_state_from_disk()[task])
+        state = load_task_state_from_disk()
+        task_state = state[task]
+        pid = task_state.get("pid")
+        running_without_live_pid = task_state.get("running") and (
+            (pid and not is_pid_running(pid))
+            or (not pid and is_heartbeat_stale(task_state.get("heartbeat_at")))
+        )
+        if running_without_live_pid:
+            task_state.update(
+                running=False,
+                last_finished_at=utc_now_label(),
+                last_error=task_state.get("last_error") or "Task process exited without updating status.",
+                pid=None,
+            )
+            save_task_state_to_disk(state)
+        return dict(task_state)
 
 
 def reset_task_state(task: str):
@@ -368,18 +358,48 @@ def reset_task_state(task: str):
         save_task_state_to_disk(state)
 
 
+def request_task_stop(task: str):
+    set_task_state(task, stop_requested=True, pending=False, last_error="")
+
+
+def is_task_stop_requested(task: str) -> bool:
+    return bool(get_task_state(task).get("stop_requested"))
+
+
 def background_crawl(cfg: dict):
     now = utc_now_label()
-    set_task_state("crawl", running=True, last_started_at=now, heartbeat_at=now, last_error="")
+    set_task_state(
+        "crawl",
+        running=True,
+        last_started_at=now,
+        last_finished_at=None,
+        heartbeat_at=now,
+        last_error="",
+        last_message="",
+        stage="",
+        current=0,
+        total=0,
+        stop_requested=False,
+    )
     try:
-        mode_used, items = run_configured_crawl(cfg)
+        mode_used, items = run_configured_crawl(
+            cfg,
+            stop_callback=lambda: is_task_stop_requested("crawl"),
+            progress_callback=lambda stage, current, total: set_task_state(
+                "crawl", stage=stage, current=current, total=total, heartbeat_at=utc_now_label()
+            ),
+        )
         st.cache_data.clear()
+        message = f"Crawl completed via {mode_used}. Scraped {len(items)} items."
+        if is_task_stop_requested("crawl"):
+            message = f"Crawl stopped via {mode_used}. Scraped {len(items)} items."
         set_task_state(
             "crawl",
             running=False,
             last_finished_at=utc_now_label(),
-            last_message=f"Crawl completed via {mode_used}. Scraped {len(items)} items.",
+            last_message=message,
             heartbeat_at=utc_now_label(),
+            stop_requested=False,
         )
     except Exception as e:
         st.cache_data.clear()
@@ -389,6 +409,7 @@ def background_crawl(cfg: dict):
             last_finished_at=utc_now_label(),
             last_error=str(e),
             heartbeat_at=utc_now_label(),
+            stop_requested=False,
         )
 
 
@@ -404,22 +425,32 @@ def background_analysis(limit: int, threshold: float):
         stage="",
         current=0,
         total=0,
+        stop_requested=False,
     )
     try:
         def progress_callback(stage: str, current: int, total: int):
             set_task_state("analysis", stage=stage, current=current, total=total, heartbeat_at=utc_now_label())
 
-        run_local_analysis(limit=limit, threshold=threshold, progress_callback=progress_callback)
+        run_local_analysis(
+            limit=limit,
+            threshold=threshold,
+            progress_callback=progress_callback,
+            stop_callback=lambda: is_task_stop_requested("analysis"),
+        )
         st.cache_data.clear()
+        message = "Analysis completed."
+        if is_task_stop_requested("analysis"):
+            message = "Analysis stopped."
         set_task_state(
             "analysis",
             running=False,
             last_finished_at=utc_now_label(),
-            last_message="Analysis completed.",
+            last_message=message,
             stage="completed",
             current=0,
             total=0,
             heartbeat_at=utc_now_label(),
+            stop_requested=False,
         )
     except Exception as e:
         st.cache_data.clear()
@@ -429,6 +460,7 @@ def background_analysis(limit: int, threshold: float):
             last_finished_at=utc_now_label(),
             last_error=str(e),
             heartbeat_at=utc_now_label(),
+            stop_requested=False,
         )
 
 
@@ -437,9 +469,120 @@ def start_background_task(task: str, target, *args) -> bool:
     if state["running"]:
         return False
 
+    now = utc_now_label()
+    set_task_state(
+        task,
+        running=True,
+        last_started_at=now,
+        last_finished_at=None,
+        heartbeat_at=now,
+        last_error="",
+        last_message="",
+        stage="",
+        current=0,
+        total=0,
+        stop_requested=False,
+    )
     thread = threading.Thread(target=target, args=args, daemon=True)
     thread.start()
     return True
+
+
+def start_crawl_process() -> bool:
+    state = get_task_state("crawl")
+    if state["running"]:
+        return False
+
+    now = utc_now_label()
+    set_task_state(
+        "crawl",
+        running=True,
+        last_started_at=now,
+        last_finished_at=None,
+        heartbeat_at=now,
+        last_error="",
+        last_message="",
+        stage="",
+        current=0,
+        total=0,
+        stop_requested=False,
+        pid=None,
+        pending=False,
+    )
+
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    process = subprocess.Popen(
+        [sys.executable, "-m", "scheduler.crawl_worker"],
+        cwd=str(PROJECT_ROOT),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=creationflags,
+    )
+    set_task_state("crawl", pid=process.pid, heartbeat_at=utc_now_label())
+    return True
+
+
+def queue_task_once(task: str):
+    set_task_state(task, pending=True, last_message="One follow-up run is queued.")
+
+
+def schedule_crawl_once() -> bool:
+    if get_task_state("crawl")["running"]:
+        queue_task_once("crawl")
+        return False
+    return start_crawl_process()
+
+
+def start_analysis_process(limit: int | None, threshold: float, analyze_all: bool = False) -> bool:
+    state = get_task_state("analysis")
+    if state["running"]:
+        return False
+
+    now = utc_now_label()
+    set_task_state(
+        "analysis",
+        running=True,
+        last_started_at=now,
+        last_finished_at=None,
+        heartbeat_at=now,
+        last_error="",
+        last_message="",
+        stage="",
+        current=0,
+        total=0,
+        stop_requested=False,
+        pid=None,
+        pending=False,
+    )
+
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    args = [sys.executable, "-m", "scheduler.analysis_worker", "--threshold", str(float(threshold))]
+    if analyze_all:
+        args.append("--all")
+    elif limit is not None:
+        args.extend(["--limit", str(int(limit))])
+
+    process = subprocess.Popen(
+        args,
+        cwd=str(PROJECT_ROOT),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=creationflags,
+    )
+    set_task_state("analysis", pid=process.pid, heartbeat_at=utc_now_label())
+    return True
+
+
+def schedule_analysis_once(cfg: dict) -> bool:
+    if get_task_state("analysis")["running"]:
+        queue_task_once("analysis")
+        return False
+    threshold = float(cfg.get("scoring", {}).get("analysis_threshold", 7.0))
+    return start_analysis_process(None, threshold, analyze_all=True)
 
 
 def render_task_status(task: str, lang: str, running_key: str):
@@ -448,6 +591,9 @@ def render_task_status(task: str, lang: str, running_key: str):
         st.info(t(lang, running_key))
         if state["last_started_at"]:
             st.caption(f"{t(lang, 'started_at')}: {state['last_started_at']}")
+        if st.button(t(lang, "stop_task"), key=f"stop_{task}"):
+            request_task_stop(task)
+            st.warning(t(lang, "stop_requested"))
     total = int(state.get("total") or 0)
     current = int(state.get("current") or 0)
     if state["running"] and total > 0:
@@ -465,6 +611,8 @@ def render_task_status(task: str, lang: str, running_key: str):
             st.success(t(lang, "stale_task_reset"))
     if state["last_message"]:
         st.caption(f"{t(lang, 'last_result')}: {state['last_message']}")
+    if state.get("pending"):
+        st.caption(t(lang, "task_pending"))
     if state["last_finished_at"]:
         st.caption(f"{t(lang, 'finished_at')}: {state['last_finished_at']}")
     if state["last_error"]:
@@ -485,24 +633,29 @@ def get_reddit_mode(cfg: dict) -> str:
     return cfg.get("reddit", {}).get("mode", "public_json")
 
 
-def get_scheduled_crawl_config(cfg: dict) -> tuple[bool, int]:
+def get_scheduled_task_config(cfg: dict) -> tuple[bool, bool]:
     reddit_cfg = cfg.get("reddit", {})
-    enabled = bool(reddit_cfg.get("scheduled_crawl_enabled", False))
-    interval = int(reddit_cfg.get("scheduled_crawl_interval_minutes", 360))
-    return enabled, max(15, interval)
+    ai_cfg = cfg.get("ai", {})
+    crawl_enabled = bool(reddit_cfg.get("scheduled_crawl_enabled", False))
+    analysis_enabled = bool(ai_cfg.get("scheduled_analysis_enabled", True))
+    return crawl_enabled, analysis_enabled
 
 
-def run_configured_crawl(cfg: dict) -> tuple[str, list[dict]]:
+def run_configured_crawl(cfg: dict, stop_callback=None, progress_callback=None) -> tuple[str, list[dict]]:
     if not CRAWL_LOCK.acquire(blocking=False):
         raise RuntimeError("A crawl is already running.")
 
     try:
-        return _run_configured_crawl_unlocked(cfg)
+        return _run_configured_crawl_unlocked(
+            cfg,
+            stop_callback=stop_callback,
+            progress_callback=progress_callback,
+        )
     finally:
         CRAWL_LOCK.release()
 
 
-def _run_configured_crawl_unlocked(cfg: dict) -> tuple[str, list[dict]]:
+def _run_configured_crawl_unlocked(cfg: dict, stop_callback=None, progress_callback=None) -> tuple[str, list[dict]]:
     mode = get_reddit_mode(cfg)
 
     ensure_directory_exists("data")
@@ -518,42 +671,64 @@ def _run_configured_crawl_unlocked(cfg: dict) -> tuple[str, list[dict]]:
     if mode == "public_json":
         from reddit.scraper_public import scrape_subreddits_public
 
-        return mode, scrape_subreddits_public()
+        return mode, scrape_subreddits_public(stop_callback=stop_callback, progress_callback=progress_callback)
 
-    raise ValueError("Invalid reddit.mode. Use 'public_json' or 'api'.")
+    if mode == "html":
+        from reddit.scraper_web import scrape_subreddits_web
+
+        return mode, scrape_subreddits_web(stop_callback=stop_callback, progress_callback=progress_callback)
+
+    if mode == "browser":
+        from reddit.scraper_browser import scrape_subreddits_browser
+
+        return mode, scrape_subreddits_browser(stop_callback=stop_callback, progress_callback=progress_callback)
+
+    raise ValueError("Invalid reddit.mode. Use 'public_json', 'html', 'browser', or 'api'.")
 
 
 def scheduled_crawl_job():
-    cfg = get_config()
-    try:
-        run_configured_crawl(cfg)
-    except RuntimeError:
-        return
+    schedule_crawl_once()
+
+
+def scheduled_analysis_job():
+    schedule_analysis_once(get_config())
 
 
 @st.cache_resource
-def start_crawl_scheduler(enabled: bool, interval_minutes: int):
-    if not enabled:
+def start_task_scheduler(crawl_enabled: bool, analysis_enabled: bool):
+    if not crawl_enabled and not analysis_enabled:
         return None
 
     from apscheduler.schedulers.background import BackgroundScheduler
 
     scheduler = BackgroundScheduler(timezone="UTC")
-    scheduler.add_job(
-        scheduled_crawl_job,
-        trigger="interval",
-        minutes=interval_minutes,
-        id="scheduled_reddit_crawl",
-        name="Scheduled Reddit Crawl",
-        replace_existing=True,
-        max_instances=1,
-        coalesce=True,
-    )
+    if crawl_enabled:
+        scheduler.add_job(
+            scheduled_crawl_job,
+            trigger="cron",
+            minute=0,
+            id="scheduled_reddit_crawl",
+            name="Scheduled Reddit Crawl",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+    if analysis_enabled:
+        scheduler.add_job(
+            scheduled_analysis_job,
+            trigger="cron",
+            minute=30,
+            id="scheduled_ai_analysis",
+            name="Scheduled AI Analysis",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
     scheduler.start()
     return scheduler
 
 
-def run_local_analysis(limit: int, threshold: float, progress_callback=None):
+def run_local_analysis(limit: int, threshold: float, progress_callback=None, stop_callback=None):
     if not ANALYZE_LOCK.acquire(blocking=False):
         raise RuntimeError("An analysis run is already running.")
 
@@ -562,10 +737,13 @@ def run_local_analysis(limit: int, threshold: float, progress_callback=None):
 
         analyze_local = importlib.reload(analyze_local)
         analyze = analyze_local.analyze
-        if "progress_callback" in inspect.signature(analyze).parameters:
-            analyze(limit=limit, threshold=threshold, progress_callback=progress_callback)
-        else:
-            analyze(limit=limit, threshold=threshold)
+        kwargs = {"limit": limit, "threshold": threshold}
+        signature = inspect.signature(analyze)
+        if "progress_callback" in signature.parameters:
+            kwargs["progress_callback"] = progress_callback
+        if "stop_callback" in signature.parameters:
+            kwargs["stop_callback"] = stop_callback
+        analyze(**kwargs)
     finally:
         ANALYZE_LOCK.release()
 
@@ -721,16 +899,16 @@ def load_analyzable_count(db_path: str, data_version: float) -> int:
         return 0
 
     conn = sqlite3.connect(db_path)
-    count = conn.execute(
+    rows = conn.execute(
         """
-        SELECT COUNT(*)
+        SELECT title, body
         FROM posts
         WHERE id NOT IN (SELECT id FROM history)
           AND (insight_processed IS NULL OR insight_processed = 0)
         """
-    ).fetchone()[0]
+    ).fetchall()
     conn.close()
-    return int(count or 0)
+    return sum(1 for title, body in rows if sanitize_text(title) and sanitize_text(body))
 
 
 @st.cache_data
@@ -891,7 +1069,7 @@ def display_insight_card(post: pd.Series, lang: str):
 
 def render_raw_posts_tab(cfg: dict, db_path: str, data_version: float, lang: str):
     reddit_mode = get_reddit_mode(cfg)
-    scheduled_enabled, scheduled_interval = get_scheduled_crawl_config(cfg)
+    scheduled_enabled, _ = get_scheduled_task_config(cfg)
 
     col1, col2 = st.columns([1, 3])
     with col1:
@@ -903,12 +1081,12 @@ def render_raw_posts_tab(cfg: dict, db_path: str, data_version: float, lang: str
         )
     with col2:
         if scheduled_enabled:
-            st.caption(t(lang, "scheduled_enabled", minutes=scheduled_interval))
+            st.caption(t(lang, "scheduled_enabled", minutes=60))
         else:
             st.caption(t(lang, "scheduled_disabled"))
 
     if crawl_clicked:
-        started = start_background_task("crawl", background_crawl, cfg)
+        started = start_crawl_process()
         if started:
             st.cache_data.clear()
             st.success(t(lang, "crawl_started"))
@@ -1009,12 +1187,7 @@ def render_insights_tab(cfg: dict, db_path: str, insights_dir: str, provider: st
         )
 
     if analyze_clicked:
-        started = start_background_task(
-            "analysis",
-            background_analysis,
-            int(analysis_limit),
-            float(analysis_threshold),
-        )
+        started = start_analysis_process(int(analysis_limit), float(analysis_threshold))
         if started:
             st.cache_data.clear()
             st.success(t(lang, "analysis_started"))
@@ -1116,7 +1289,7 @@ def main():
     cfg = get_config()
     provider = cfg["ai"]["provider"]
     reddit_mode = get_reddit_mode(cfg)
-    scheduled_enabled, scheduled_interval = get_scheduled_crawl_config(cfg)
+    scheduled_crawl_enabled, scheduled_analysis_enabled = get_scheduled_task_config(cfg)
     db_path = cfg["database"]["path"]
     insights_dir = cfg.get("paths", {}).get("batch_responses_dir", "data/batch_responses")
     primary_subreddits = cfg.get("subreddits", {}).get("primary", [])
@@ -1130,7 +1303,7 @@ def main():
     )
 
     try:
-        start_crawl_scheduler(scheduled_enabled, scheduled_interval)
+        start_task_scheduler(scheduled_crawl_enabled, scheduled_analysis_enabled)
     except Exception as e:
         st.warning(t(lang, "scheduled_start_failed", error=e))
 

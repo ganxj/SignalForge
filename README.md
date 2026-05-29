@@ -5,9 +5,11 @@
 ## 主要功能
 
 - 抓取指定 subreddit 的帖子和评论。
-- 支持两种 Reddit 抓取方式：
+- 支持多种 Reddit 抓取方式：
   - `reddit/scraper.py`：使用 PRAW 和 Reddit API 凭据抓取。
   - `reddit/scraper_public.py`：使用 Reddit 公开 JSON 接口抓取，不需要 Reddit API 凭据，带缓存、限速和退避。
+  - `reddit/scraper_web.py`：使用 HTTP 请求抓取 Reddit 页面 HTML。
+  - `reddit/scraper_browser.py`：使用独立 Playwright Chromium 浏览器实例抓取。
 - 使用 AI 做两阶段处理：
   - 过滤阶段：给帖子/评论打分，包括相关性、痛点清晰度、情绪强度、可实现性、技术深度等。
   - 深度洞察阶段：对高分内容提取痛点、产品机会、目标人群、商业模式、技术壁垒等信息。
@@ -80,20 +82,32 @@ Copy-Item .env.template .env
 
 ```yaml
 reddit:
-  mode: public_json  # public_json 或 api
+  mode: browser  # public_json、html、browser 或 api
   scheduled_crawl_enabled: true
-  scheduled_crawl_interval_minutes: 360
 
 ui:
   default_language: zh  # zh 或 en
+
+ai:
+  scheduled_analysis_enabled: true
 ```
 
 - `public_json`：使用 Reddit 公开 JSON 接口，不需要 Reddit API 凭据。
+- `html`：使用普通 HTTP 请求抓取 Reddit 页面 HTML，不需要 Reddit API 凭据。
+- `browser`：使用 Playwright 启动独立 Chromium 浏览器实例抓取，不接管你正在使用的浏览器窗口；不需要 Reddit API 凭据。
 - `api`：使用 `reddit/scraper.py` 的 PRAW + Reddit API 凭据方式。
-- `scheduled_crawl_enabled`：Streamlit 页面运行期间是否自动定时抓取。
-- `scheduled_crawl_interval_minutes`：定时抓取间隔，默认 360 分钟，也就是 6 小时。
-- `public_scraper.cache_ttl_hours`：公开 JSON 响应缓存时间，默认 6 小时，建议和定时抓取间隔保持一致。
+- `scheduled_crawl_enabled`：Streamlit 页面运行期间是否在每小时 0 分自动抓取 Reddit。
+- `ai.scheduled_analysis_enabled`：Streamlit 页面运行期间是否在每小时 30 分自动分析已有数据。
+- `public_scraper.cache_ttl_hours`：公开 JSON 响应缓存时间。
 - `ui.default_language`：页面默认语言，`zh` 为中文，`en` 为英文。页面侧边栏也可以随时切换语言。
+
+如果使用 `reddit.mode: browser`，除了 `pip install -r requirements.txt`，还需要安装 Playwright 的 Chromium：
+
+```bash
+playwright install chromium
+```
+
+浏览器抓取模式会用独立、无界面的 Chromium 访问 Reddit 页面，解析帖子和评论后写入 SQLite。
 
 ### Reddit API 模式需要的变量
 
@@ -169,11 +183,13 @@ http://localhost:8501
 页面顶部会显示当前 `reddit.mode`、AI provider 和目标 subreddit。在 `Scraped Posts` 标签页点击 `Crawl Reddit` 后，页面会按 `config/config.yaml` 的 `reddit.mode` 选择抓取器：
 
 - `public_json`：调用 `reddit/scraper_public.py`。
+- `html`：调用 `reddit/scraper_web.py`。
+- `browser`：调用 `reddit/scraper_browser.py`，使用独立 Playwright Chromium 实例。
 - `api`：调用 `reddit/scraper.py`。
 
 抓取结果会写入 `data/db.sqlite`，并立即显示在页面的 `Scraped Posts` 标签页。
 
-如果 `scheduled_crawl_enabled: true`，页面服务运行期间还会按 `scheduled_crawl_interval_minutes` 自动抓取。这个调度运行在 Streamlit 进程内；关闭页面服务后，定时抓取也会停止。
+如果 `scheduled_crawl_enabled: true`，页面服务运行期间会在每小时 0 分自动抓取 Reddit；如果 `ai.scheduled_analysis_enabled: true`，会在每小时 30 分自动分析已有数据。同类任务如果上一轮还没结束，会最多排队 1 次，上一轮结束后立刻补跑。
 
 ### 2. 使用本地/兼容 OpenAI 接口抓取并分析
 

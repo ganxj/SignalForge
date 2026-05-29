@@ -106,9 +106,14 @@ def dedupe_by_thread(candidate_scores: dict[str, float]) -> set[str]:
     return {post_id for post_id, _ in thread_best.values()}
 
 
-def analyze(limit: int, threshold: float, progress_callback=None):
+def analyze(limit: int, threshold: float, progress_callback=None, stop_callback=None):
     ensure_directory_exists(RESULT_DIR)
-    posts = [p for p in get_unprocessed_posts(limit) if is_valid_post(p)]
+    raw_posts = get_unprocessed_posts(limit)
+    invalid_ids = [p["id"] for p in raw_posts if not is_valid_post(p)]
+    if invalid_ids:
+        mark_posts_in_history(invalid_ids)
+        log.info(f"Marked {len(invalid_ids)} invalid empty-title/body items as processed in history.")
+    posts = [p for p in raw_posts if is_valid_post(p)]
     log.info(f"Loaded {len(posts)} unprocessed posts/comments for analysis.")
     if progress_callback:
         progress_callback("filtering", 0, len(posts))
@@ -127,6 +132,9 @@ def analyze(limit: int, threshold: float, progress_callback=None):
     candidates = {}
 
     for index, post in enumerate(posts, start=1):
+        if stop_callback and stop_callback():
+            log.info("Analysis stop requested during filtering.")
+            return
         post_id = post["id"]
         if progress_callback:
             progress_callback("filtering", index, len(posts))
@@ -170,6 +178,9 @@ def analyze(limit: int, threshold: float, progress_callback=None):
         progress_callback("insight", 0, len(high_potential_ids))
 
     for index, post_id in enumerate(high_potential_ids, start=1):
+        if stop_callback and stop_callback():
+            log.info("Analysis stop requested during insight generation.")
+            return
         post = by_id.get(post_id)
         if not post:
             continue

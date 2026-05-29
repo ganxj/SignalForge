@@ -3,6 +3,33 @@
 # Target communities
 subreddits:
   primary:
+    # Tech, developer, SaaS, and infrastructure communities
+    - selfhosted
+    - devops
+    - saas
+    - programming
+    - learnprogramming
+    - webdev
+    - softwareengineering
+    - sysadmin
+    - cybersecurity
+    - homelab
+    - DataHoarder
+    - artificial
+    - MachineLearning
+    # Business, finance, career, and product communities
+    - entrepreneur
+    - startups
+    - smallbusiness
+    - marketing
+    - productivity
+    - careeradvice
+    - jobs
+    - cscareerquestions
+    - personalfinance
+    - investing
+    - stocks
+    - CryptoCurrency
     # Broad mainstream communities
     - AskReddit
     - NoStupidQuestions
@@ -32,33 +59,7 @@ subreddits:
     - travel
     - food
     - fitness
-    - personalfinance
-    - investing
-    - stocks
-    - CryptoCurrency
-    - entrepreneur
-    - startups
-    - smallbusiness
-    - marketing
-    - productivity
     - GetMotivated
-    - careeradvice
-    - jobs
-    - cscareerquestions
-    # Tech, developer, SaaS, and infrastructure communities
-    - selfhosted
-    - devops
-    - saas
-    - programming
-    - learnprogramming
-    - webdev
-    - softwareengineering
-    - sysadmin
-    - cybersecurity
-    - homelab
-    - DataHoarder
-    - artificial
-    - MachineLearning
   exploratory_limit: 12             # Max exploratory subreddits at a time
   exploratory_refresh_days: 7       # How often to refresh improvised list
   exploratory_percentage: 90        # % of posts from exploratory communities
@@ -66,9 +67,8 @@ subreddits:
 
 # Reddit scraping settings
 reddit:
-  mode: public_json                 # "public_json" or "api"
-  scheduled_crawl_enabled: true     # Run automatic crawls while the Streamlit app is open
-  scheduled_crawl_interval_minutes: 360
+  mode: browser                     # "public_json", "html", "browser", or "api"
+  scheduled_crawl_enabled: true     # Run automatic crawls at minute 0 of every hour while the Streamlit app is open
 
 ui:
   default_language: zh              # "zh" or "en"
@@ -102,6 +102,7 @@ public_scraper:
 # AI provider settings
 ai:
   provider: openai               # "openai" or "anthropic"
+  scheduled_analysis_enabled: true  # Run automatic AI analysis at minute 30 of every hour while the Streamlit app is open
   openai:
     model_filter: deepseek-3.2        # For pre-filtering stage
     model_deep: deepseek-3.2             # For insight extraction
@@ -126,6 +127,7 @@ scoring:
   technical_depth_weight: 0.2       # Penalize vibe-codeable ideas, reward real engineering
   recent_activity_weight: 0.1       # Prioritize active threads
   min_technical_depth: 4            # Hard filter: reject posts below this technical depth score
+  analysis_threshold: 7.0           # Scheduled AI analysis weighted-score threshold
   output_top_n: 10                  # Number of final posts to recommend
 
 # Database settings

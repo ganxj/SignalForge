@@ -39,7 +39,15 @@ def scrape_configured_subreddits() -> list[dict]:
         from reddit.scraper_public import scrape_subreddits_public
 
         return scrape_subreddits_public()
-    raise ValueError("Invalid reddit.mode. Use 'public_json' or 'api'.")
+    if mode == "html":
+        from reddit.scraper_web import scrape_subreddits_web
+
+        return scrape_subreddits_web()
+    if mode == "browser":
+        from reddit.scraper_browser import scrape_subreddits_browser
+
+        return scrape_subreddits_browser()
+    raise ValueError("Invalid reddit.mode. Use 'public_json', 'html', 'browser', or 'api'.")
 
 def submit_with_backoff(batch_items, model, generate_file_fn, label="filter") -> str | None:
     delay = 10
