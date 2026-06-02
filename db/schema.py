@@ -40,7 +40,8 @@ def create_tables():
         implementability_score REAL,
         technical_depth_score REAL,
         insight_processed INTEGER DEFAULT 0,
-        insight_processed_at TEXT
+        insight_processed_at TEXT,
+        manual_category TEXT DEFAULT 'unclassified'
     );
     """)
 
@@ -65,10 +66,18 @@ def create_tables():
     except sqlite3.OperationalError:
         pass  # Column already exists
 
+    # Migration: add manual_category column if missing (for existing databases)
+    try:
+        c.execute("ALTER TABLE posts ADD COLUMN manual_category TEXT DEFAULT 'unclassified'")
+        log.info("Added manual_category column to posts table")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     c.execute("CREATE INDEX IF NOT EXISTS idx_posts_processed_at ON posts(processed_at);")
     c.execute("CREATE INDEX IF NOT EXISTS idx_posts_relevance ON posts(relevance_score);")
     c.execute("CREATE INDEX IF NOT EXISTS idx_posts_roi ON posts(roi_weight);")
     c.execute("CREATE INDEX IF NOT EXISTS idx_posts_subreddit ON posts(subreddit);")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_posts_manual_category ON posts(manual_category);")
 
     conn.commit()
     conn.close()

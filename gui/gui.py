@@ -41,6 +41,16 @@ st.set_page_config(
 CRAWL_LOCK = threading.Lock()
 ANALYZE_LOCK = threading.Lock()
 TASK_STATE_LOCK = threading.Lock()
+INSIGHT_CATEGORIES = [
+    "unclassified",
+    "valuable",
+    "maybe",
+    "not_valuable",
+    "too_hard",
+    "existing_solution",
+    "lesson_learned",
+    "off_target",
+]
 TRANSLATIONS = {
     "en": {
         "language": "Language",
@@ -153,6 +163,16 @@ TRANSLATIONS = {
         "sort_tech_depth": "Technical depth score",
         "sort_roi": "ROI",
         "sort_created": "Created time",
+        "manual_category": "Manual category",
+        "category_filter": "Manual category",
+        "category_unclassified": "Unclassified",
+        "category_valuable": "Worth trying",
+        "category_maybe": "Maybe",
+        "category_not_valuable": "Not valuable",
+        "category_too_hard": "Too hard",
+        "category_existing_solution": "Existing solution",
+        "category_lesson_learned": "Lesson learned",
+        "category_off_target": "Off target",
     },
     "zh": {
         "language": "语言",
@@ -265,6 +285,16 @@ TRANSLATIONS = {
         "sort_tech_depth": "技术深度分",
         "sort_roi": "ROI",
         "sort_created": "创建时间",
+        "manual_category": "人工分类",
+        "category_filter": "人工分类",
+        "category_unclassified": "未分类",
+        "category_valuable": "可以尝试",
+        "category_maybe": "暂不确定",
+        "category_not_valuable": "没有价值",
+        "category_too_hard": "难度太大",
+        "category_existing_solution": "已有成熟方案",
+        "category_lesson_learned": "经验教训",
+        "category_off_target": "非目标方向",
     },
 }
 
@@ -295,6 +325,38 @@ def display_sort_field(lang: str, field: str) -> str:
         "created_utc": t(lang, "sort_created"),
     }
     return labels.get(field, field)
+
+
+def display_insight_category(lang: str, category: str) -> str:
+    return t(lang, f"category_{category}")
+
+
+def ensure_manual_category_column(db_path: str):
+    if not os.path.exists(db_path):
+        return
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("ALTER TABLE posts ADD COLUMN manual_category TEXT DEFAULT 'unclassified'")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        conn.close()
+
+
+def update_manual_category(db_path: str, post_id: str, category: str):
+    if category not in INSIGHT_CATEGORIES:
+        return
+    ensure_manual_category_column(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE posts SET manual_category = ? WHERE id = ?",
+            (category, post_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def display_processing_status(lang: str, status: str) -> str:
@@ -921,11 +983,13 @@ def load_posts_with_insights(
     if not os.path.exists(db_path):
         return pd.DataFrame()
 
+    ensure_manual_category_column(db_path)
     conn = sqlite3.connect(db_path)
     query = """
     SELECT id, url, title, body, relevance_score, pain_score, emotion_score,
            COALESCE(technical_depth_score, 0) as technical_depth_score,
-           subreddit, created_utc, processed_at
+           subreddit, created_utc, processed_at,
+           COALESCE(manual_category, 'unclassified') as manual_category
     FROM posts
     WHERE insight_processed = 1
     """
@@ -1013,7 +1077,7 @@ def display_raw_post_card(post: pd.Series, lang: str):
             st.caption(" | ".join(score_parts))
 
 
-def display_insight_card(post: pd.Series, lang: str):
+def display_insight_card(post: pd.Series, lang: str, db_path: str):
     with st.container():
         st.markdown("---")
         col1, col2, col3, col4, col5, col6 = st.columns([1, 1, 1, 1, 1, 9])
@@ -1043,6 +1107,21 @@ def display_insight_card(post: pd.Series, lang: str):
             for tag in tags_list
         )
         st.markdown(tags_html, unsafe_allow_html=True)
+
+    current_category = post.get("manual_category") or "unclassified"
+    if current_category not in INSIGHT_CATEGORIES:
+        current_category = "unclassified"
+    selected_category = st.selectbox(
+        t(lang, "manual_category"),
+        options=INSIGHT_CATEGORIES,
+        index=INSIGHT_CATEGORIES.index(current_category),
+        format_func=lambda item: display_insight_category(lang, item),
+        key=f"manual_category_{post['id']}",
+    )
+    if selected_category != current_category:
+        update_manual_category(db_path, post["id"], selected_category)
+        st.cache_data.clear()
+        st.rerun()
 
     if post.get("product_opportunity"):
         st.success(f"{t(lang, 'suggested_solution')}: {post['product_opportunity']}")
@@ -1210,6 +1289,19 @@ def render_insights_tab(cfg: dict, db_path: str, insights_dir: str, provider: st
     st.success(t(lang, "loaded_insights", count=len(df), provider=provider))
 
     st.sidebar.header(t(lang, "filters_sorting"))
+    st.sidebar.subheader(t(lang, "category_filter"))
+    selected_category = st.sidebar.selectbox(
+        t(lang, "category_filter"),
+        options=INSIGHT_CATEGORIES,
+        index=0,
+        format_func=lambda item: display_insight_category(lang, item),
+        key="insight_manual_category_filter",
+    )
+    df = df[df["manual_category"].fillna("unclassified") == selected_category]
+    if df.empty:
+        st.warning(t(lang, "no_insights"))
+        return
+
     st.sidebar.subheader(t(lang, "score_filters"))
 
     roi_range = create_safe_slider(t(lang, "roi_range"), df["roi_weight"], "roi", lang)
@@ -1274,7 +1366,7 @@ def render_insights_tab(cfg: dict, db_path: str, insights_dir: str, provider: st
         page_df = filtered_df
 
     for _, post in page_df.iterrows():
-        display_insight_card(post, lang)
+        display_insight_card(post, lang, db_path)
 
     if len(filtered_df) > 0:
         st.sidebar.subheader(t(lang, "summary_stats"))

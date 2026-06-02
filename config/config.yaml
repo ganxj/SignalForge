@@ -91,6 +91,9 @@ public_scraper:
   cache_dir: data/cache/reddit_json
   max_comments_per_post: 8
   max_items_to_analyze: 12
+  browser_page_timeout_seconds: 25
+  browser_settle_milliseconds: 1200
+  browser_crawl_timeout_minutes: 25
   comment_sort: confidence
   min_posts_per_subreddit: 2
   sorts:
