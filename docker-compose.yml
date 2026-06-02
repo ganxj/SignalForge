@@ -1,0 +1,21 @@
+services:
+  reddit-scrapper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: reddit-scrapper:latest
+    container_name: reddit-scrapper
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Shanghai
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config/config.yaml:/app/config/config.yaml:ro
+    shm_size: "1gb"

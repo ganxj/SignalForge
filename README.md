@@ -73,6 +73,52 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+## Docker Compose 部署
+
+首次部署前先准备环境变量：
+
+```bash
+cp .env.template .env
+```
+
+Windows PowerShell：
+
+```powershell
+Copy-Item .env.template .env
+```
+
+然后编辑 `.env`，填入需要的 API Key。启动服务：
+
+```bash
+docker compose up -d --build
+```
+
+访问：
+
+```text
+http://localhost:8501
+```
+
+查看日志：
+
+```bash
+docker compose logs -f reddit-scrapper
+```
+
+停止服务：
+
+```bash
+docker compose down
+```
+
+Compose 会挂载：
+
+- `./data:/app/data`：SQLite 数据库、缓存和任务状态。
+- `./logs:/app/logs`：运行日志。
+- `./config/config.yaml:/app/config/config.yaml:ro`：读取本地配置文件。
+
+如果 `OPENAI_BASE_URL` 指向宿主机上的本地模型服务，容器内不能使用 `http://127.0.0.1:端口` 访问宿主机；通常需要改成 `http://host.docker.internal:端口/v1`。
+
 ## 配置
 
 复制环境变量模板：
