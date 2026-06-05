@@ -30,6 +30,7 @@ from scheduler.task_state import (
     utc_now_label,
 )
 from utils.helpers import ensure_directory_exists, sanitize_text
+from utils.logger import setup_logger
 
 
 st.set_page_config(
@@ -38,6 +39,7 @@ st.set_page_config(
     layout="wide",
 )
 
+log = setup_logger()
 CRAWL_LOCK = threading.Lock()
 ANALYZE_LOCK = threading.Lock()
 TASK_STATE_LOCK = threading.Lock()
@@ -763,7 +765,14 @@ def start_task_scheduler(crawl_enabled: bool, analysis_enabled: bool):
 
     from apscheduler.schedulers.background import BackgroundScheduler
 
-    scheduler = BackgroundScheduler(timezone="UTC")
+    scheduler = BackgroundScheduler(
+        timezone="Asia/Shanghai",
+        job_defaults={
+            "coalesce": True,
+            "max_instances": 1,
+            "misfire_grace_time": 600,
+        },
+    )
     if crawl_enabled:
         scheduler.add_job(
             scheduled_crawl_job,
@@ -774,7 +783,9 @@ def start_task_scheduler(crawl_enabled: bool, analysis_enabled: bool):
             replace_existing=True,
             max_instances=1,
             coalesce=True,
+            misfire_grace_time=600,
         )
+        log.info("Scheduled Reddit crawl registered: every hour at minute 0 Asia/Shanghai.")
     if analysis_enabled:
         scheduler.add_job(
             scheduled_analysis_job,
@@ -785,8 +796,11 @@ def start_task_scheduler(crawl_enabled: bool, analysis_enabled: bool):
             replace_existing=True,
             max_instances=1,
             coalesce=True,
+            misfire_grace_time=600,
         )
+        log.info("Scheduled AI analysis registered: every hour at minute 30 Asia/Shanghai.")
     scheduler.start()
+    log.info("Task scheduler started.")
     return scheduler
 
 
