@@ -1,0 +1,15 @@
+Decide whether this Reddit post/comment is worth spending more AI tokens on.
+
+Pass only if it clearly describes a real recurring pain point that could become a software or digital-service product opportunity.
+
+Reject if it is mainly:
+- entertainment, meme, photo, music, gaming, movie/TV discussion, trivia, news, politics, or general curiosity
+- a one-off personal anecdote without a repeatable problem
+- too vague to infer a product opportunity
+- not solvable by software or digital services
+- too narrow, trivial, or unlikely to have willingness to pay
+
+Respond in Markdown only, using exactly these fields. Do not return JSON.
+
+- decision: yes
+- reason: One short sentence explaining why this should continue or be rejected.

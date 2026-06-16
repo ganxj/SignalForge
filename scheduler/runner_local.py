@@ -18,12 +18,15 @@ from db.writer import (
     insert_post,
     mark_insight_processed,
     mark_posts_in_history,
+    update_post_analysis_status,
+    update_post_filter_decision,
     update_post_filter_scores,
     update_post_insight,
+    update_post_prefilter_result,
 )
-from gpt.filters import build_filter_prompt
+from gpt.filters import build_filter_prompt, build_prefilter_prompt
 from gpt.insights import build_insight_prompt
-from gpt.local_chat import chat_json
+from gpt.local_chat import chat_markdown, parse_filter_markdown, parse_insight_markdown, parse_prefilter_markdown
 from reddit.scraper_public import scrape_subreddits_public
 from scheduler.cost_tracker import initialize_cost_tracking
 from scheduler.runner import clean_old_batch_files, is_valid_post
@@ -115,6 +118,7 @@ def run_local_pipeline(score_threshold: float = 7.0):
     min_depth = config["scoring"].get("min_technical_depth", 4)
 
     ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    prefilter_result_path = os.path.join(RESULT_DIR, f"prefilter_result_local_{ts}.jsonl")
     filter_result_path = os.path.join(RESULT_DIR, f"filter_result_local_{ts}.jsonl")
     insight_result_path = os.path.join(RESULT_DIR, f"insight_result_local_{ts}.jsonl")
 
@@ -126,11 +130,27 @@ def run_local_pipeline(score_threshold: float = 7.0):
         post_id = post["id"]
         log.info(f"Filtering {index}/{len(scraped_posts)}: {post_id}")
         try:
-            scores = chat_json(
+            prefilter = chat_markdown(
+                build_prefilter_prompt(_format_for_prompt(post)),
+                model=model_filter,
+                max_tokens=180,
+                temperature=0,
+                parser=parse_prefilter_markdown,
+            )
+            _write_jsonl(prefilter_result_path, _openai_style_result(post_id, prefilter))
+            update_post_prefilter_result(post_id, bool(prefilter.get("pass")), prefilter.get("reason"))
+            if not prefilter.get("pass"):
+                update_post_analysis_status(post_id, "filtered_out", prefilter.get("reason") or "Rejected by AI prefilter.")
+                mark_posts_in_history([post_id])
+                log.info(f"Prefilter rejected: {post_id}, reason={prefilter.get('reason', '')}")
+                continue
+
+            scores = chat_markdown(
                 build_filter_prompt(_format_for_prompt(post)),
                 model=model_filter,
                 max_tokens=800,
                 temperature=0,
+                parser=parse_filter_markdown,
             )
             update_post_filter_scores(post_id, scores)
             _write_jsonl(filter_result_path, _openai_style_result(post_id, scores))
@@ -138,7 +158,9 @@ def run_local_pipeline(score_threshold: float = 7.0):
 
             technical_depth = scores.get("technical_depth_score", 5)
             score = _weighted_score(scores)
-            if technical_depth >= min_depth and score >= score_threshold:
+            passed_full_filter = technical_depth >= min_depth and score >= score_threshold
+            update_post_filter_decision(post_id, passed_full_filter)
+            if passed_full_filter:
                 candidates[post_id] = score
                 log.info(f"Candidate: {post_id}, score={score:.2f}")
             else:
@@ -164,11 +186,12 @@ def run_local_pipeline(score_threshold: float = 7.0):
             continue
         log.info(f"Insight {index}/{len(high_potential_ids)}: {post_id}")
         try:
-            insight = chat_json(
+            insight = chat_markdown(
                 build_insight_prompt(_format_for_prompt(post)),
                 model=model_deep,
                 max_tokens=1500,
                 temperature=0,
+                parser=parse_insight_markdown,
             )
             update_post_insight(post_id, insight)
             mark_insight_processed(post_id)

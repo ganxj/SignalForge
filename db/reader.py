@@ -48,7 +48,10 @@ def get_posts_by_ids(post_ids: set, require_unprocessed: bool = False) -> list:
     placeholders = ",".join("?" for _ in post_ids)
     query = f"SELECT * FROM posts WHERE id IN ({placeholders})"
     if require_unprocessed:
-        query += " AND (insight_processed IS NULL OR insight_processed = 0)"
+        query += (
+            " AND (insight_processed IS NULL OR insight_processed = 0)"
+            " AND COALESCE(analysis_status, 'pending') = 'pending'"
+        )
 
     try:
         rows = conn.execute(query, tuple(post_ids)).fetchall()

@@ -82,6 +82,64 @@ def update_post_filter_scores(post_id: str, scores: dict):
     except sqlite3.Error as e:
         print(f"[SQLite update_post_filter_scores Error] {e}")
 
+def update_post_analysis_status(post_id: str, status: str, error: str | None = None):
+    """Persist the latest AI analysis attempt state for a single post/comment."""
+    conn = _get_connection()
+    try:
+        conn.execute("""
+        UPDATE posts SET
+            analysis_status = ?,
+            analysis_error = ?,
+            analysis_attempted_at = ?
+        WHERE id = ?
+        """, (
+            status,
+            error[:1000] if error else None,
+            datetime.now(UTC).isoformat(),
+            post_id,
+        ))
+        conn.commit()
+    except sqlite3.Error as e:
+        print(f"[SQLite update_post_analysis_status Error] {e}")
+
+def update_post_prefilter_result(post_id: str, passed: bool, reason: str | None = None):
+    """Persist the first-stage AI prefilter decision."""
+    conn = _get_connection()
+    try:
+        conn.execute("""
+        UPDATE posts SET
+            prefilter_pass = ?,
+            prefilter_reason = ?,
+            prefilter_processed_at = ?
+        WHERE id = ?
+        """, (
+            1 if passed else 0,
+            reason[:1000] if reason else None,
+            datetime.now(UTC).isoformat(),
+            post_id,
+        ))
+        conn.commit()
+    except sqlite3.Error as e:
+        print(f"[SQLite update_post_prefilter_result Error] {e}")
+
+def update_post_filter_decision(post_id: str, passed: bool):
+    """Persist the second-stage full scoring decision."""
+    conn = _get_connection()
+    try:
+        conn.execute("""
+        UPDATE posts SET
+            filter_pass = ?,
+            filter_processed_at = ?
+        WHERE id = ?
+        """, (
+            1 if passed else 0,
+            datetime.now(UTC).isoformat(),
+            post_id,
+        ))
+        conn.commit()
+    except sqlite3.Error as e:
+        print(f"[SQLite update_post_filter_decision Error] {e}")
+
 def update_post_insight(post_id: str, insight: dict):
     """Update deeper insights (tags, roi_weight). Safe from overwriting with nulls."""
     conn = _get_connection()

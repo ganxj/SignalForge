@@ -44,17 +44,39 @@ Your task is to extract a concrete, actionable product opportunity:
 
 10. **Justification**: 1-2 sentences on why this is or isn't worth pursuing, referencing specific evidence from the post. If the idea is too simple to build (low technical moat), explicitly say so and explain why it's easily replicable.
 
-Respond with a JSON object like:
-{
-  "pain_point": "Freelance designers spend 3+ hours weekly chasing late payments across PayPal, Stripe, and bank transfers with no unified view.",
-  "affected_audience": "freelance designers and illustrators managing 5-20 active clients",
-  "business_type": "B2C",
-  "existing_alternatives": "FreshBooks (too expensive at $30/mo for solo), Wave (free but no payment tracking across processors), spreadsheets (manual and error-prone)",
-  "product_opportunity": "A lightweight payment tracker that auto-imports from PayPal, Stripe, and bank feeds, flags overdue invoices, and sends automated reminders. MVP: connect 2 payment sources + overdue alerts.",
-  "build_complexity": "medium",
-  "technical_moat": "Requires reliable real-time sync across 3+ payment APIs with different webhook formats, intelligent reconciliation logic to match partial payments across sources, and idempotent transaction processing to avoid double-counting. Not trivially replicable.",
-  "business_model": "Freemium — free for 1 payment source, $9/mo for unlimited",
-  "tags": ["invoicing", "freelancer-tools", "payments"],
-  "roi_weight": 4,
-  "justification": "Large addressable market (millions of freelancers), clear willingness to pay (poster mentions paying $30/mo for FreshBooks), and meaningful integration complexity creates a real technical moat against quick clones."
-}
+Respond in Markdown only, using exactly these sections. Do not return JSON.
+
+## Pain point
+Freelance designers spend 3+ hours weekly chasing late payments across PayPal, Stripe, and bank transfers with no unified view.
+
+## Affected audience
+Freelance designers and illustrators managing 5-20 active clients.
+
+## Business type
+B2C
+
+## Existing alternatives
+FreshBooks (too expensive at $30/mo for solo), Wave (free but no payment tracking across processors), spreadsheets (manual and error-prone).
+
+## Product opportunity
+A lightweight payment tracker that auto-imports from PayPal, Stripe, and bank feeds, flags overdue invoices, and sends automated reminders. MVP: connect 2 payment sources + overdue alerts.
+
+## Build complexity
+medium
+
+## Technical moat
+Requires reliable real-time sync across 3+ payment APIs with different webhook formats, intelligent reconciliation logic to match partial payments across sources, and idempotent transaction processing to avoid double-counting. Not trivially replicable.
+
+## Business model
+Freemium - free for 1 payment source, $9/mo for unlimited.
+
+## Tags
+- invoicing
+- freelancer-tools
+- payments
+
+## ROI weight
+4
+
+## Justification
+Large addressable market, clear willingness to pay, and meaningful integration complexity creates a real technical moat against quick clones.

@@ -29,6 +29,7 @@ from config.config_loader import get_config
 from db.reader import is_already_processed
 from db.writer import insert_post
 from reddit.rate_limiter import RedditRateLimiter
+from reddit.subreddit_selection import get_crawl_subreddits
 from utils.logger import setup_logger
 
 log = setup_logger()
@@ -289,7 +290,7 @@ def scrape_subreddits_public(stop_callback=None, progress_callback=None) -> list
     REQUEST_COUNT = 0
     RATE_LIMIT_HITS = 0
 
-    primary_subreddits = config["subreddits"]["primary"]
+    primary_subreddits = get_crawl_subreddits(config)
     total_limit = config["scraper"].get("max_items_per_day", 10)
     per_subreddit = max(1, total_limit // max(1, len(primary_subreddits)))
     per_subreddit = max(per_subreddit, int(PUBLIC_CFG.get("min_posts_per_subreddit", 2)))

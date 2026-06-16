@@ -67,12 +67,14 @@ Your output should include:
   NOTE: We want ideas scoring 5-10. Anything below 4 is too easy to build and has no technical moat — competitors can replicate it instantly.
 - `summary`: a 1-sentence summary of the pain point
 
-Respond with a JSON object like:
-{
-  "relevance_score": 8,
-  "emotional_intensity": 7,
-  "pain_point_clarity": 9,
-  "implementability_score": 6,
-  "technical_depth_score": 7,
-  "summary": "Small business owners struggle to automate invoicing without paying for expensive enterprise software."
-}
+Respond in Markdown only, using exactly these fields. Do not return JSON.
+
+## Scores
+- relevance_score: 8
+- emotional_intensity: 7
+- pain_point_clarity: 9
+- implementability_score: 6
+- technical_depth_score: 7
+
+## Summary
+Small business owners struggle to automate invoicing without paying for expensive enterprise software.

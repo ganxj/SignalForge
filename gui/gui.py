@@ -64,7 +64,7 @@ TRANSLATIONS = {
         "scraped_posts": "Scraped Posts",
         "ai_insights": "AI Insights",
         "crawl_reddit": "Crawl Reddit",
-        "scheduled_enabled": "Scheduled crawl is enabled at minute 0 of every hour while this app is running.",
+        "scheduled_enabled": "Scheduled crawl is enabled every 6 hours while this app is running.",
         "scheduled_disabled": "Scheduled crawl is disabled. Enable it in config/config.yaml -> reddit.scheduled_crawl_enabled.",
         "crawling": "Crawling Reddit via {mode}...",
         "crawl_completed": "Crawl completed via {mode}. Scraped {count} items.",
@@ -97,6 +97,7 @@ TRANSLATIONS = {
         "status_processed": "Processed",
         "status_with_insight": "With insights",
         "status_filtered_out": "Filtered out",
+        "status_analysis_failed": "Analysis failed",
         "status_all": "All",
         "filter_raw_subreddit": "Filter raw posts by subreddit",
         "filter_type": "Filter by type",
@@ -186,7 +187,7 @@ TRANSLATIONS = {
         "scraped_posts": "已抓取内容",
         "ai_insights": "AI 洞察",
         "crawl_reddit": "抓取 Reddit",
-        "scheduled_enabled": "页面运行期间，每小时 0 分自动抓取一次。",
+        "scheduled_enabled": "页面运行期间，每 6 小时自动抓取一次。",
         "scheduled_disabled": "定时抓取已关闭，可在 config/config.yaml -> reddit.scheduled_crawl_enabled 开启。",
         "crawling": "正在通过 {mode} 抓取 Reddit...",
         "crawl_completed": "抓取完成，模式：{mode}，本次返回 {count} 条。",
@@ -219,6 +220,7 @@ TRANSLATIONS = {
         "status_processed": "已处理",
         "status_with_insight": "已生成洞察",
         "status_filtered_out": "过滤淘汰",
+        "status_analysis_failed": "分析失败",
         "status_all": "全部",
         "filter_raw_subreddit": "按 subreddit 筛选原始内容",
         "filter_type": "按类型筛选",
@@ -367,6 +369,7 @@ def display_processing_status(lang: str, status: str) -> str:
         "processed": t(lang, "status_processed"),
         "with_insight": t(lang, "status_with_insight"),
         "filtered_out": t(lang, "status_filtered_out"),
+        "analysis_failed": t(lang, "status_analysis_failed"),
         "all": t(lang, "status_all"),
     }.get(status, status)
 
@@ -776,8 +779,8 @@ def start_task_scheduler(crawl_enabled: bool, analysis_enabled: bool):
     if crawl_enabled:
         scheduler.add_job(
             scheduled_crawl_job,
-            trigger="cron",
-            minute=0,
+            trigger="interval",
+            hours=6,
             id="scheduled_reddit_crawl",
             name="Scheduled Reddit Crawl",
             replace_existing=True,
@@ -785,7 +788,7 @@ def start_task_scheduler(crawl_enabled: bool, analysis_enabled: bool):
             coalesce=True,
             misfire_grace_time=600,
         )
-        log.info("Scheduled Reddit crawl registered: every hour at minute 0 Asia/Shanghai.")
+        log.info("Scheduled Reddit crawl registered: every 6 hours Asia/Shanghai.")
     if analysis_enabled:
         scheduler.add_job(
             scheduled_analysis_job,
@@ -842,14 +845,43 @@ def _extract_json_from_text(text: str) -> str:
 
 def get_data_version(db_path: str, insights_dir: str) -> float:
     mtimes = []
-    if os.path.exists(db_path):
-        mtimes.append(os.path.getmtime(db_path))
+    for path in [db_path, f"{db_path}-wal", f"{db_path}-shm", TASK_STATUS_PATH]:
+        if os.path.exists(path):
+            mtimes.append(os.path.getmtime(path))
 
     insights_path = Path(insights_dir)
     if insights_path.exists():
         mtimes.extend(f.stat().st_mtime for f in insights_path.glob("insight_result_*.jsonl"))
 
     return max(mtimes, default=0.0)
+
+
+def query_analyzable_count(db_path: str) -> int:
+    if not os.path.exists(db_path):
+        return 0
+
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT title, body
+            FROM posts
+            WHERE id NOT IN (SELECT id FROM history)
+              AND (insight_processed IS NULL OR insight_processed = 0)
+              AND COALESCE(analysis_status, 'pending') = 'pending'
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+    return sum(1 for title, body in rows if sanitize_text(title) and sanitize_text(body))
+
+
+def render_analyzable_metric_live(db_path: str, lang: str):
+    st.metric(t(lang, "analyzable_count"), query_analyzable_count(db_path))
+
+
+if hasattr(st, "fragment"):
+    render_analyzable_metric_live = st.fragment(run_every="2s")(render_analyzable_metric_live)
 
 
 @st.cache_data
@@ -870,11 +902,16 @@ def load_recent_posts(
     if "all" not in selected_statuses:
         status_conditions = []
         if "pending" in selected_statuses:
-            status_conditions.append("(h.id IS NULL AND COALESCE(p.insight_processed, 0) = 0)")
+            status_conditions.append(
+                "(h.id IS NULL AND COALESCE(p.insight_processed, 0) = 0 "
+                "AND COALESCE(p.analysis_status, 'pending') = 'pending')"
+            )
         if "with_insight" in selected_statuses:
             status_conditions.append("COALESCE(p.insight_processed, 0) = 1")
         if "filtered_out" in selected_statuses:
             status_conditions.append("(h.id IS NOT NULL AND COALESCE(p.insight_processed, 0) = 0)")
+        if "analysis_failed" in selected_statuses:
+            status_conditions.append("COALESCE(p.analysis_status, '') IN ('filter_failed', 'insight_failed')")
         if "processed" in selected_statuses:
             status_conditions.append("h.id IS NOT NULL")
         if status_conditions:
@@ -906,9 +943,12 @@ def load_recent_posts(
            p.processed_at, p.relevance_score, p.pain_score, p.emotion_score,
            COALESCE(p.technical_depth_score, 0) as technical_depth_score,
            COALESCE(p.insight_processed, 0) as insight_processed,
+           COALESCE(p.analysis_status, 'pending') as analysis_status,
+           p.analysis_error,
            CASE WHEN h.id IS NOT NULL THEN 1 ELSE 0 END AS is_processed,
            CASE
                WHEN COALESCE(p.insight_processed, 0) = 1 THEN 'with_insight'
+               WHEN COALESCE(p.analysis_status, '') IN ('filter_failed', 'insight_failed') THEN 'analysis_failed'
                WHEN h.id IS NOT NULL THEN 'filtered_out'
                ELSE 'pending'
            END AS processing_status
@@ -938,7 +978,15 @@ def load_scraped_summary(db_path: str, data_version: float) -> dict:
         SELECT
             COUNT(*) AS total,
             SUM(CASE WHEN h.id IS NOT NULL THEN 1 ELSE 0 END) AS processed,
-            SUM(CASE WHEN COALESCE(p.insight_processed, 0) = 1 THEN 1 ELSE 0 END) AS with_insight
+            SUM(CASE WHEN COALESCE(p.insight_processed, 0) = 1 THEN 1 ELSE 0 END) AS with_insight,
+            SUM(
+                CASE
+                    WHEN h.id IS NULL
+                     AND COALESCE(p.insight_processed, 0) = 0
+                     AND COALESCE(p.analysis_status, 'pending') = 'pending'
+                    THEN 1 ELSE 0
+                END
+            ) AS pending
         FROM posts p
         LEFT JOIN history h ON h.id = p.id
         """
@@ -948,11 +996,52 @@ def load_scraped_summary(db_path: str, data_version: float) -> dict:
     total = int(row[0] or 0)
     processed = int(row[1] or 0)
     with_insight = int(row[2] or 0)
+    pending = int(row[3] or 0)
     return {
         "total": total,
         "processed": processed,
         "with_insight": with_insight,
-        "pending": total - processed,
+        "pending": pending,
+    }
+
+
+@st.cache_data
+def load_analysis_funnel_summary(db_path: str, data_version: float) -> dict:
+    if not os.path.exists(db_path):
+        return {
+            "prefilter_total": 0,
+            "prefilter_rejected": 0,
+            "prefilter_passed": 0,
+            "filter_total": 0,
+            "filter_rejected": 0,
+            "filter_passed": 0,
+            "with_insight": 0,
+        }
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        """
+        SELECT
+            SUM(CASE WHEN p.prefilter_pass IS NOT NULL THEN 1 ELSE 0 END) AS prefilter_total,
+            SUM(CASE WHEN p.prefilter_pass = 0 THEN 1 ELSE 0 END) AS prefilter_rejected,
+            SUM(CASE WHEN p.prefilter_pass = 1 THEN 1 ELSE 0 END) AS prefilter_passed,
+            SUM(CASE WHEN p.filter_pass IS NOT NULL THEN 1 ELSE 0 END) AS filter_total,
+            SUM(CASE WHEN p.filter_pass = 0 THEN 1 ELSE 0 END) AS filter_rejected,
+            SUM(CASE WHEN p.filter_pass = 1 THEN 1 ELSE 0 END) AS filter_passed,
+            SUM(CASE WHEN COALESCE(p.insight_processed, 0) = 1 THEN 1 ELSE 0 END) AS with_insight
+        FROM posts p
+        """
+    ).fetchone()
+    conn.close()
+
+    return {
+        "prefilter_total": int(row[0] or 0),
+        "prefilter_rejected": int(row[1] or 0),
+        "prefilter_passed": int(row[2] or 0),
+        "filter_total": int(row[3] or 0),
+        "filter_rejected": int(row[4] or 0),
+        "filter_passed": int(row[5] or 0),
+        "with_insight": int(row[6] or 0),
     }
 
 
@@ -971,20 +1060,7 @@ def load_all_subreddits(db_path: str, data_version: float) -> list[str]:
 
 @st.cache_data
 def load_analyzable_count(db_path: str, data_version: float) -> int:
-    if not os.path.exists(db_path):
-        return 0
-
-    conn = sqlite3.connect(db_path)
-    rows = conn.execute(
-        """
-        SELECT title, body
-        FROM posts
-        WHERE id NOT IN (SELECT id FROM history)
-          AND (insight_processed IS NULL OR insight_processed = 0)
-        """
-    ).fetchall()
-    conn.close()
-    return sum(1 for title, body in rows if sanitize_text(title) and sanitize_text(body))
+    return query_analyzable_count(db_path)
 
 
 @st.cache_data
@@ -1089,6 +1165,9 @@ def display_raw_post_card(post: pd.Series, lang: str):
                 score_parts.append(f"**{label}:** {float(value):.2f}")
         if score_parts:
             st.caption(" | ".join(score_parts))
+        analysis_error = post.get("analysis_error")
+        if post.get("processing_status") == "analysis_failed" and analysis_error:
+            st.caption(f"{t(lang, 'last_error')}: {analysis_error}")
 
 
 def display_insight_card(post: pd.Series, lang: str, db_path: str):
@@ -1198,7 +1277,7 @@ def render_raw_posts_tab(cfg: dict, db_path: str, data_version: float, lang: str
     raw_subreddits = load_all_subreddits(db_path, data_version)
     selected_statuses = st.multiselect(
         t(lang, "status_filter"),
-        options=["pending", "processed", "with_insight", "filtered_out", "all"],
+        options=["pending", "analysis_failed", "processed", "with_insight", "filtered_out", "all"],
         default=["pending"],
         format_func=lambda item: display_processing_status(lang, item),
         key="raw_statuses",
@@ -1258,7 +1337,7 @@ def render_insights_tab(cfg: dict, db_path: str, insights_dir: str, provider: st
 
     col0, col1, col2, col3 = st.columns([1, 1, 1, 2])
     with col0:
-        st.metric(t(lang, "analyzable_count"), analyzable_count)
+        render_analyzable_metric_live(db_path, lang)
     with col1:
         safe_default_limit = min(default_limit, max(analyzable_count, 1))
         analysis_limit = st.number_input(
@@ -1288,6 +1367,17 @@ def render_insights_tab(cfg: dict, db_path: str, insights_dir: str, provider: st
             st.warning(t(lang, "task_running_blocked"))
 
     render_task_status_live("analysis", lang, "analysis_running")
+
+    funnel = load_analysis_funnel_summary(db_path, data_version)
+    st.markdown("**AI analysis funnel**")
+    f_col1, f_col2, f_col3, f_col4, f_col5, f_col6, f_col7 = st.columns(7)
+    f_col1.metric("Stage 1 checked", funnel["prefilter_total"])
+    f_col2.metric("Stage 1 rejected", funnel["prefilter_rejected"])
+    f_col3.metric("Stage 1 passed", funnel["prefilter_passed"])
+    f_col4.metric("Stage 2 scored", funnel["filter_total"])
+    f_col5.metric("Stage 2 rejected", funnel["filter_rejected"])
+    f_col6.metric("Stage 2 passed", funnel["filter_passed"])
+    f_col7.metric(t(lang, "insight_count"), funnel["with_insight"])
 
     with st.spinner(t(lang, "loading_insights")):
         try:

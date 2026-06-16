@@ -41,6 +41,14 @@ def create_tables():
         technical_depth_score REAL,
         insight_processed INTEGER DEFAULT 0,
         insight_processed_at TEXT,
+        analysis_status TEXT DEFAULT 'pending',
+        analysis_error TEXT,
+        analysis_attempted_at TEXT,
+        prefilter_pass INTEGER,
+        prefilter_reason TEXT,
+        prefilter_processed_at TEXT,
+        filter_pass INTEGER,
+        filter_processed_at TEXT,
         manual_category TEXT DEFAULT 'unclassified'
     );
     """)
@@ -52,32 +60,33 @@ def create_tables():
     );
     """)
 
-    # Migration: add technical_depth_score column if missing (for existing databases)
-    try:
-        c.execute("ALTER TABLE posts ADD COLUMN technical_depth_score REAL")
-        log.info("Added technical_depth_score column to posts table")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
-
-    # Migration: add parent_post_id column if missing (for existing databases)
-    try:
-        c.execute("ALTER TABLE posts ADD COLUMN parent_post_id TEXT")
-        log.info("Added parent_post_id column to posts table")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
-
-    # Migration: add manual_category column if missing (for existing databases)
-    try:
-        c.execute("ALTER TABLE posts ADD COLUMN manual_category TEXT DEFAULT 'unclassified'")
-        log.info("Added manual_category column to posts table")
-    except sqlite3.OperationalError:
-        pass  # Column already exists
+    existing_columns = {row[1] for row in c.execute("PRAGMA table_info(posts)").fetchall()}
+    migrations = [
+        ("technical_depth_score", "REAL"),
+        ("parent_post_id", "TEXT"),
+        ("manual_category", "TEXT DEFAULT 'unclassified'"),
+        ("analysis_status", "TEXT DEFAULT 'pending'"),
+        ("analysis_error", "TEXT"),
+        ("analysis_attempted_at", "TEXT"),
+        ("prefilter_pass", "INTEGER"),
+        ("prefilter_reason", "TEXT"),
+        ("prefilter_processed_at", "TEXT"),
+        ("filter_pass", "INTEGER"),
+        ("filter_processed_at", "TEXT"),
+    ]
+    for column_name, column_sql in migrations:
+        if column_name not in existing_columns:
+            c.execute(f"ALTER TABLE posts ADD COLUMN {column_name} {column_sql}")
+            log.info(f"Added {column_name} column to posts table")
 
     c.execute("CREATE INDEX IF NOT EXISTS idx_posts_processed_at ON posts(processed_at);")
     c.execute("CREATE INDEX IF NOT EXISTS idx_posts_relevance ON posts(relevance_score);")
     c.execute("CREATE INDEX IF NOT EXISTS idx_posts_roi ON posts(roi_weight);")
     c.execute("CREATE INDEX IF NOT EXISTS idx_posts_subreddit ON posts(subreddit);")
     c.execute("CREATE INDEX IF NOT EXISTS idx_posts_manual_category ON posts(manual_category);")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_posts_analysis_status ON posts(analysis_status);")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_posts_prefilter_pass ON posts(prefilter_pass);")
+    c.execute("CREATE INDEX IF NOT EXISTS idx_posts_filter_pass ON posts(filter_pass);")
 
     conn.commit()
     conn.close()

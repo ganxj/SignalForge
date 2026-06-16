@@ -13,7 +13,6 @@ subreddits:
     - softwareengineering
     - sysadmin
     - cybersecurity
-    - homelab
     - DataHoarder
     - artificial
     - MachineLearning
@@ -33,12 +32,12 @@ subreddits:
     - accounting
     - bookkeeping
     - investing
-    - stocks
     - CryptoCurrency
     - Teachers
     - nursing
     - medicine
-    # Broad mainstream communities
+  sampled:
+    # Broad mainstream communities: low product-signal, sampled lightly per run
     - AskReddit
     - NoStupidQuestions
     - todayilearned
@@ -68,6 +67,7 @@ subreddits:
     - food
     - fitness
     - GetMotivated
+  sampled_per_run: 4                # Rotate through a few broad communities each crawl
   exploratory_limit: 12             # Max exploratory subreddits at a time
   exploratory_refresh_days: 7       # How often to refresh improvised list
   exploratory_percentage: 90        # % of posts from exploratory communities
@@ -76,7 +76,7 @@ subreddits:
 # Reddit scraping settings
 reddit:
   mode: browser                     # "public_json", "html", "browser", or "api"
-  scheduled_crawl_enabled: true     # Run automatic crawls at minute 0 of every hour while the Streamlit app is open
+  scheduled_crawl_enabled: true     # Run automatic crawls every 6 hours at minute 0 while the Streamlit app is open
 
 ui:
   default_language: zh              # "zh" or "en"

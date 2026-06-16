@@ -27,6 +27,7 @@ def get_analyzable_count(cfg: dict) -> int:
             FROM posts
             WHERE id NOT IN (SELECT id FROM history)
               AND (insight_processed IS NULL OR insight_processed = 0)
+              AND COALESCE(analysis_status, 'pending') = 'pending'
             """
         ).fetchall()
     finally:
@@ -52,6 +53,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--all", action="store_true")
+    parser.add_argument("--max-limit", type=int, default=500)
     parser.add_argument("--threshold", type=float, default=float(cfg.get("scoring", {}).get("analysis_threshold", 7.0)))
     args = parser.parse_args()
 
@@ -73,7 +75,10 @@ def main():
         )
 
         try:
-            limit = get_analyzable_count(cfg) if args.all or args.limit is None else args.limit
+            if args.all or args.limit is None:
+                limit = min(get_analyzable_count(cfg), max(1, args.max_limit))
+            else:
+                limit = args.limit
             run_once(limit, args.threshold)
             message = "Analysis stopped." if is_task_stop_requested("analysis") else "Analysis completed."
             set_task_state(

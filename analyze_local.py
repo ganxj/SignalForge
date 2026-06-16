@@ -19,12 +19,15 @@ from db.reader import get_post_parent_mapping
 from db.writer import (
     mark_insight_processed,
     mark_posts_in_history,
+    update_post_analysis_status,
+    update_post_filter_decision,
     update_post_filter_scores,
     update_post_insight,
+    update_post_prefilter_result,
 )
-from gpt.filters import build_filter_prompt
+from gpt.filters import build_filter_prompt, build_prefilter_prompt
 from gpt.insights import build_insight_prompt
-from gpt.local_chat import chat_json
+from gpt.local_chat import chat_markdown, parse_filter_markdown, parse_insight_markdown, parse_prefilter_markdown
 from scheduler.runner import is_valid_post
 from utils.helpers import ensure_directory_exists, sanitize_text
 from utils.logger import setup_logger
@@ -48,6 +51,7 @@ def get_unprocessed_posts(limit: int) -> list[dict]:
             SELECT * FROM posts
             WHERE id NOT IN (SELECT id FROM history)
               AND (insight_processed IS NULL OR insight_processed = 0)
+              AND COALESCE(analysis_status, 'pending') = 'pending'
             ORDER BY created_utc DESC
             LIMIT ?
             """,
@@ -111,6 +115,8 @@ def analyze(limit: int, threshold: float, progress_callback=None, stop_callback=
     raw_posts = get_unprocessed_posts(limit)
     invalid_ids = [p["id"] for p in raw_posts if not is_valid_post(p)]
     if invalid_ids:
+        for post_id in invalid_ids:
+            update_post_analysis_status(post_id, "invalid", "Missing title or body.")
         mark_posts_in_history(invalid_ids)
         log.info(f"Marked {len(invalid_ids)} invalid empty-title/body items as processed in history.")
     posts = [p for p in raw_posts if is_valid_post(p)]
@@ -126,6 +132,7 @@ def analyze(limit: int, threshold: float, progress_callback=None, stop_callback=
     min_depth = config["scoring"].get("min_technical_depth", 4)
 
     ts = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+    prefilter_result_path = os.path.join(RESULT_DIR, f"prefilter_result_local_{ts}.jsonl")
     filter_result_path = os.path.join(RESULT_DIR, f"filter_result_local_{ts}.jsonl")
     insight_result_path = os.path.join(RESULT_DIR, f"insight_result_local_{ts}.jsonl")
 
@@ -136,33 +143,59 @@ def analyze(limit: int, threshold: float, progress_callback=None, stop_callback=
             log.info("Analysis stop requested during filtering.")
             return
         post_id = post["id"]
-        if progress_callback:
-            progress_callback("filtering", index, len(posts))
         log.info(f"Filtering {index}/{len(posts)}: {post_id} ({post.get('type')}, r/{post.get('subreddit')})")
         try:
-            scores = chat_json(
+            prefilter = chat_markdown(
+                build_prefilter_prompt(_format_for_prompt(post)),
+                model=model_filter,
+                max_tokens=180,
+                temperature=0,
+                parser=parse_prefilter_markdown,
+            )
+            _write_jsonl(prefilter_result_path, _openai_style_result(post_id, prefilter))
+            update_post_prefilter_result(post_id, bool(prefilter.get("pass")), prefilter.get("reason"))
+            if not prefilter.get("pass"):
+                update_post_analysis_status(post_id, "filtered_out", prefilter.get("reason") or "Rejected by AI prefilter.")
+                mark_posts_in_history([post_id])
+                log.info(f"Prefilter rejected: {post_id}, reason={prefilter.get('reason', '')}")
+                if progress_callback:
+                    progress_callback("filtering", index, len(posts))
+                continue
+
+            scores = chat_markdown(
                 build_filter_prompt(_format_for_prompt(post)),
                 model=model_filter,
                 max_tokens=800,
                 temperature=0,
+                parser=parse_filter_markdown,
             )
             update_post_filter_scores(post_id, scores)
             _write_jsonl(filter_result_path, _openai_style_result(post_id, scores))
 
             technical_depth = scores.get("technical_depth_score", 5)
             score = _weighted_score(scores)
-            if technical_depth >= min_depth and score >= threshold:
+            passed_full_filter = technical_depth >= min_depth and score >= threshold
+            update_post_filter_decision(post_id, passed_full_filter)
+            if passed_full_filter:
                 candidates[post_id] = score
                 log.info(f"Candidate: {post_id}, score={score:.2f}")
             else:
+                update_post_analysis_status(post_id, "filtered_out")
                 mark_posts_in_history([post_id])
                 log.info(f"Rejected: {post_id}, score={score:.2f}, tech_depth={technical_depth}")
+            if progress_callback:
+                progress_callback("filtering", index, len(posts))
         except Exception as e:
             log.error(f"Failed to filter {post_id}: {e}")
+            update_post_analysis_status(post_id, "filter_failed", str(e))
+            if progress_callback:
+                progress_callback("filtering", index, len(posts))
 
     high_potential_ids = dedupe_by_thread(candidates)
     duplicate_candidate_ids = set(candidates) - high_potential_ids
     if duplicate_candidate_ids:
+        for post_id in duplicate_candidate_ids:
+            update_post_analysis_status(post_id, "filtered_out", "Duplicate item in the same thread.")
         mark_posts_in_history(list(duplicate_candidate_ids))
         log.info(f"Marked {len(duplicate_candidate_ids)} duplicate same-thread candidates as processed in history.")
 
@@ -184,22 +217,27 @@ def analyze(limit: int, threshold: float, progress_callback=None, stop_callback=
         post = by_id.get(post_id)
         if not post:
             continue
-        if progress_callback:
-            progress_callback("insight", index, len(high_potential_ids))
         log.info(f"Insight {index}/{len(high_potential_ids)}: {post_id}")
         try:
-            insight = chat_json(
+            insight = chat_markdown(
                 build_insight_prompt(_format_for_prompt(post)),
                 model=model_deep,
                 max_tokens=1500,
                 temperature=0,
+                parser=parse_insight_markdown,
             )
             update_post_insight(post_id, insight)
             mark_insight_processed(post_id)
+            update_post_analysis_status(post_id, "with_insight")
             mark_posts_in_history([post_id])
             _write_jsonl(insight_result_path, _openai_style_result(post_id, insight))
+            if progress_callback:
+                progress_callback("insight", index, len(high_potential_ids))
         except Exception as e:
             log.error(f"Failed to generate insight for {post_id}: {e}")
+            update_post_analysis_status(post_id, "insight_failed", str(e))
+            if progress_callback:
+                progress_callback("insight", index, len(high_potential_ids))
 
     log.info("Analysis completed.")
     if progress_callback:

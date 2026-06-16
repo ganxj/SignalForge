@@ -155,7 +155,7 @@ ai:
 - `html`：使用普通 HTTP 请求抓取 Reddit 页面 HTML，不需要 Reddit API 凭据。
 - `browser`：使用 Playwright 启动独立 Chromium 浏览器实例抓取，不接管你正在使用的浏览器窗口；不需要 Reddit API 凭据。
 - `api`：使用 `reddit/scraper.py` 的 PRAW + Reddit API 凭据方式。
-- `scheduled_crawl_enabled`：Streamlit 页面运行期间是否在每小时 0 分自动抓取 Reddit。
+- `scheduled_crawl_enabled`：Streamlit 页面运行期间是否每 6 小时自动抓取 Reddit。
 - `ai.scheduled_analysis_enabled`：Streamlit 页面运行期间是否在每小时 30 分自动分析已有数据。
 - `public_scraper.cache_ttl_hours`：公开 JSON 响应缓存时间。
 - `ui.default_language`：页面默认语言，`zh` 为中文，`en` 为英文。页面侧边栏也可以随时切换语言。
@@ -248,7 +248,7 @@ http://localhost:8501
 
 抓取结果会写入 `data/db.sqlite`，并立即显示在页面的 `Scraped Posts` 标签页。
 
-如果 `scheduled_crawl_enabled: true`，页面服务运行期间会在每小时 0 分自动抓取 Reddit；如果 `ai.scheduled_analysis_enabled: true`，会在每小时 30 分自动分析已有数据。同类任务如果上一轮还没结束，会最多排队 1 次，上一轮结束后立刻补跑。
+如果 `scheduled_crawl_enabled: true`，页面服务运行期间会每 6 小时自动抓取 Reddit；如果 `ai.scheduled_analysis_enabled: true`，会在每小时 30 分自动分析已有数据。同类任务如果上一轮还没结束，会最多排队 1 次，上一轮结束后立刻补跑。
 
 ### 2. 使用本地/兼容 OpenAI 接口抓取并分析
 

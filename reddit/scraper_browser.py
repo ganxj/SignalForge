@@ -8,6 +8,7 @@ from urllib.parse import urljoin
 from config.config_loader import get_config
 from db.reader import is_already_processed
 from db.writer import insert_post
+from reddit.subreddit_selection import get_crawl_subreddits
 from utils.logger import setup_logger
 
 log = setup_logger()
@@ -225,7 +226,7 @@ def scrape_subreddits_browser(stop_callback=None, progress_callback=None) -> lis
     except ImportError as e:
         raise RuntimeError("Playwright is not installed. Run: pip install -r requirements.txt") from e
 
-    primary_subreddits = config["subreddits"]["primary"]
+    primary_subreddits = get_crawl_subreddits(config)
     total_limit = config["scraper"].get("max_items_per_day", 10)
     per_subreddit = max(1, total_limit // max(1, len(primary_subreddits)))
     per_subreddit = max(per_subreddit, int(PUBLIC_CFG.get("min_posts_per_subreddit", 2)))
